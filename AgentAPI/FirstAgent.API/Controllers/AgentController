@@ -1,0 +1,72 @@
+using Azure;
+using Azure.AI.Projects;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+
+namespace FirstAgent.API.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class AgentController : ControllerBase
+    {
+        private readonly AgentsClient _agentsClient;
+
+        public AgentController(AgentsClient agentsClient)
+        {
+            _agentsClient = agentsClient;
+        }
+
+        [HttpPost("AIAgent")]
+        public async Task<IActionResult> SendPrompt([FromBody] AgentRequestDto request)
+        {
+            if (string.IsNullOrWhiteSpace(request.Prompt))
+                return BadRequest("Prompt is required.");
+
+
+            // Get agent
+            var agentResponse = await _agentsClient.GetAgentAsync("asst_IjCIwMfYERrkCZgBt9lKG1Pt");
+            var agent = agentResponse.Value;
+
+            // Create thread and add user message
+            var threadResponse = await _agentsClient.CreateThreadAsync();
+            var thread = threadResponse.Value;
+
+            await _agentsClient.CreateMessageAsync(thread.Id, MessageRole.User, request.Prompt);
+
+            // Run agent
+            var runResponse = await _agentsClient.CreateRunAsync(thread.Id, agent.Id);
+            var run = runResponse.Value;
+
+            // Poll until complete
+            while (run.Status == RunStatus.Queued || run.Status == RunStatus.InProgress)
+            {
+                await Task.Delay(500);
+                runResponse = await _agentsClient.GetRunAsync(thread.Id, run.Id);
+                run = runResponse.Value;
+            }
+
+            // Get messages
+            var messagesResponse = await _agentsClient.GetMessagesAsync(thread.Id);
+            var messages = messagesResponse.Value.Data;
+
+            // Extract assistant reply
+            var reply = messages
+                .Where(m => m.Role == MessageRole.Agent)
+                .SelectMany(m => m.ContentItems)
+                .OfType<MessageTextContent>()
+                .Select(c => c.Text)
+                .ToList();
+
+            return Ok(new
+            {
+                prompt = request.Prompt,
+                response = reply
+            });
+        }
+    }
+}
+
+public class AgentRequestDto
+{
+    public string Prompt { get; set; }
+}
